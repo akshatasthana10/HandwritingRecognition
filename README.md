@@ -2,6 +2,8 @@
 
 Converts a photo of a handwritten page into typed text using a CNN (trained on EMNIST, 47 classes) and OpenCV character segmentation, with a local web app to check and correct the result.
 
+![Checking a page: the photo and the typed text side by side, with letters worth checking underlined in red](docs/screenshots/2-check-letters.jpg)
+
 ## Setup
 
 ```bash

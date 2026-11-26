@@ -202,7 +202,8 @@ kbd {
 
 /* ---------------------------------------------------------------- typed text */
 .text-pane { display: flex; flex-direction: column; gap: 1rem; }
-.summary { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; color: var(--muted); }
+.summary { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem; color: var(--muted); }
+.summary button { white-space: nowrap; }
 .summary p { margin: 0; max-width: 34rem; }
 .summary strong { color: var(--graphite); font-weight: 600; }
 .summary .unsure-count { color: var(--red); }
@@ -320,7 +321,8 @@ textarea.sheet { width: 100%; resize: none; }
   .workspace { grid-template-columns: 1fr; }
   .page-pane { border-right: 0; border-bottom: 1px solid var(--rule); overflow: visible; }
   .text-pane { overflow: visible; }
-  .sheet { flex: none; }
+  .sheet { flex: none; min-height: 0; padding-inline: 1.1rem; --line: 34px; font-size: 19px; background-position: 0 calc(var(--line) * 0.5 + 7px); }
+  .page-pane, .text-pane { padding: 1rem; }
   .bar { flex-wrap: wrap; gap: 0.75rem; }
   .model-label { display: none; }
 }
