@@ -30,8 +30,8 @@ because the model's 47 EMNIST classes merge upper and lower case for many letter
 | | char accuracy | ignoring spaces |
 |---|---|---|
 | Original pipeline, original CNN | 89.0% | 87.3% |
-| Improved pipeline, original CNN | 95.9% | 95.5% |
-| Improved pipeline, new CNN (`train.py`) | **96.8%** | **96.6%** |
+| Improved pipeline, original CNN | 96.1% | 95.7% |
+| Improved pipeline, new CNN (`train.py`) | **97.9%** | **97.8%** |
 
 The app uses the new CNN (`models/emnist_cnn.keras`) when it is present. To use the original one
 (`AZaz09weights`), set `HWR_MODEL=original`, e.g. `HWR_MODEL=original .venv/bin/python frontend.py`
@@ -42,7 +42,12 @@ How the pipeline gives the CNN cleaner input (see the docstring in `app.py`):
 - line grouping that follows slanted lines, i/j dots attached to their stems, broken strokes merged, and full stops/hyphens detected
 - characters rendered like EMNIST samples: aspect ratio kept, normalised stroke width, anti-aliased and blurred
 - predictions averaged over a few renderings of each character
-- context-aware decoding: a word is read as all letters or all digits unless a switch is strongly supported, and a dotted vs tall bar decides i / l
+- context-aware decoding: a word is read as all letters or all digits unless a switch is strongly supported
+- plain vertical bars (which the model cannot tell apart) are resolved from the page: a dot makes "i", a word in capitals makes "I", rising above the local x-height makes "l"
+- touching letters ("th", "to") that the model is unsure about are cut at their thinnest column when the model is confident about both halves
+
+A page takes about 0.2 s to recognise (11 sample pages in about 1 s on an M3 MacBook Air). The desktop
+app opens immediately, loads the model in the background and converts without freezing the window.
 
 ## Training the new CNN
 
