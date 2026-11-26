@@ -1,0 +1,13 @@
+{
+  "Test1 86.4.jpg": "Test sheet for handwritting recognition.\nAccuracy of about 80 percent is observed.\nNumbers are also included in our data set\nalong with capital and small english\nalphabets.",
+  "Test2 89.6.jpg": "Longer Handwritten Text\n5 to 6 Lines\nAtleast 10 test cases\nAccuracy of model computes to\nabout 80 percent.\nABCD\n1234",
+  "Test3 91.9.jpg": "My name is Harshita. My\nhobby is Dancing. I love\nlistening to music. I am a\nStudent of Information\nTechnology at MNNIT\nALLAHABAD.\nThis is a sample test page.",
+  "Test4 86.8.jpg": "THIS IS AN EXAMPLE OF\nHANDWRITING RECOGNITION IN\nENGLISH.\nWE ARE USING PYTHON AND\nOPENCV TO RECOGNISE\nHANDWRITTEN TEXT.\nWE ARE GROUP 10 INFORMATION\nTECHNOLOGY.",
+  "Test5 93.2.jpg": "The quick brown fox jumps\nover the lazy dog. There are\n26 letters in the alphabet.\n365 days in a year.\n7 in a week.\n11 7s are 77.\n8 2s are 16.\nAlphanumeric data checking",
+  "Test6 96.6.jpg": "SPACE IS THE BOUNDLESS THREE\nDIMENSIONAL EXTENT IN WHICH\nOBJECT AND EVENT HAVE RELATIVE\nPOSITION AND DIRECTION PHYSICAL",
+  "Test7 88.6.jpg": "a b c d e f\ng h i j k l\nm n o p q r\ns t u v w x\ny z",
+  "Test8 87.5.jpg": "This is an example of Handwriting\nRecognition in English.\nWe are using Python and OPENcv to\nrecognise handwritten text.\nImage processing techniques like contour\nanalysis and image dilation will help seperate\nthis text into individual characters for\nrecognising individual characters by CNN.",
+  "Test9 78.4.jpg": "Testing Numbers\n11111 2222 33333\n4444 555 6666\n777 888 9999\n65432798210\n000",
+  "Test10 88.0.jpg": "Coronavirus disease is an\ninfectious disease caused by\na newly discovered\ncoronavirus.\nMost people infected with\nthe COVID - 19 virus\nwill experience mild to\nmoderate respiratory\nillness",
+  "Test11.jpg": "Precision Recall Analysis characterwise\nijjji qqqxzxzxzqwqqqijjij\nxzjfkqvwz zxqjkjq\ntesting some less frequent characters"
+}
