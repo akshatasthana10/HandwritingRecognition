@@ -1,6 +1,6 @@
 # HandwritingRecognition
 
-Converts an image of handwritten text into typed text using a CNN (trained on EMNIST, 47 classes) and OpenCV character segmentation, with a Kivy desktop UI.
+Converts a photo of a handwritten page into typed text using a CNN (trained on EMNIST, 47 classes) and OpenCV character segmentation, with a local web app to check and correct the result.
 
 ## Setup
 
@@ -12,10 +12,18 @@ uv pip install --python .venv/bin/python -r requirements.txt
 ## Run
 
 ```bash
-.venv/bin/python frontend.py
+.venv/bin/python server.py
 ```
 
-Click **choose image to convert**, pick an image (samples are in `dataset/`), then click **convert**.
+This starts a local server and opens http://127.0.0.1:8765 in your browser. Everything runs on your
+computer; images are only sent to this local server.
+
+- Drop a photo of a handwritten page, choose a file, paste an image (⌘V), or try a sample page.
+- The typed text appears next to the photo. Point at a letter in either one to see where it is in the other.
+- Letters the model was unsure about are underlined in red. Click one (or **Check next letter**) to see
+  the model's other readings and pick or type the right letter.
+- **Copy text**, **Download .txt**, or **Edit as plain text** for free-form edits.
+- Switch between the new and the original model at the top right.
 
 ## Accuracy
 
@@ -34,8 +42,8 @@ because the model's 47 EMNIST classes merge upper and lower case for many letter
 | Improved pipeline, new CNN (`train.py`) | **97.9%** | **97.8%** |
 
 The app uses the new CNN (`models/emnist_cnn.keras`) when it is present. To use the original one
-(`AZaz09weights`), set `HWR_MODEL=original`, e.g. `HWR_MODEL=original .venv/bin/python frontend.py`
-or `.venv/bin/python evaluate.py --model original`.
+(`AZaz09weights`), pick **Original** in the web app, set `HWR_MODEL=original`, or run
+`.venv/bin/python evaluate.py --model original`.
 
 How the pipeline gives the CNN cleaner input (see the docstring in `app.py`):
 - background normalisation before thresholding, so shadows and show-through from the back of the page are dropped
@@ -46,8 +54,7 @@ How the pipeline gives the CNN cleaner input (see the docstring in `app.py`):
 - plain vertical bars (which the model cannot tell apart) are resolved from the page: a dot makes "i", a word in capitals makes "I", rising above the local x-height makes "l"
 - touching letters ("th", "to") that the model is unsure about are cut at their thinnest column when the model is confident about both halves
 
-A page takes about 0.2 s to recognise (11 sample pages in about 1 s on an M3 MacBook Air). The desktop
-app opens immediately, loads the model in the background and converts without freezing the window.
+A page takes about 0.2 s to recognise (11 sample pages in about 1 s on an M3 MacBook Air).
 
 ## Training the new CNN
 

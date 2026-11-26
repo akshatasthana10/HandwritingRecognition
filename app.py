@@ -17,6 +17,7 @@ Pipeline
    vertical bars, which the model cannot tell apart, become i / I / l from the dot, the
    word's case and the local x-height.
 """
+import contextvars
 import os
 
 import cv2 as cv
@@ -87,9 +88,17 @@ def _load_legacy_weights(model, path):
 _MODELS = {}
 
 
+_ACTIVE_MODEL = contextvars.ContextVar("active_model", default=None)
+
+
+def available_models():
+    return ["new", "original"] if os.path.exists(NEW_MODEL_PATH) else ["original"]
+
+
 def model_name():
-    """Which classifier to use: HWR_MODEL=original|new, default "new" when it has been trained."""
-    name = os.environ.get("HWR_MODEL", "").lower()
+    """Which classifier to use: the one recognize() was asked for, else HWR_MODEL=original|new,
+    else "new" when it has been trained."""
+    name = _ACTIVE_MODEL.get() or os.environ.get("HWR_MODEL", "").lower()
     if name in ("original", "new"):
         return name
     return "new" if os.path.exists(NEW_MODEL_PATH) else "original"
@@ -527,15 +536,52 @@ def word_gap_threshold(lines, med_h):
     return (best_t if best_t is not None else SPACE_GAP * 1.5) * med_h
 
 
-def image_method(path):
-    gray = cv.imread(path, cv.IMREAD_GRAYSCALE)
-    if gray is None:
-        raise ValueError(f"Could not read image: {path}")
+BAR_CLASSES = [OUTPUT_LABELS.index('I'), OUTPUT_LABELS.index('L'), OUTPUT_LABELS.index('1')]
+
+
+def _char_info(final, logp_row, by_geometry):
+    """Confidence and the model's next-best readings for one recognised character."""
+    p = np.exp(logp_row)
+    if by_geometry:                       # an i / l / I decided from the page, not the model
+        conf = float(p[BAR_CLASSES].sum())
+    else:
+        # context already chose letters or digits for this word, so judge the reading against
+        # its own group ("o" and "0" are the same shape; that is not uncertainty about the letter)
+        key = final if final in OUTPUT_LABELS else final.upper()
+        group = DIGITS if final.isdigit() else LETTERS
+        conf = float(p[OUTPUT_LABELS.index(key)] / max(p[group].sum(), 1e-9)) if key in OUTPUT_LABELS else float(p.max())
+    alts = []
+    for idx in np.argsort(-p):
+        alt = OUTPUT_LABELS[idx]
+        alt = alt.upper() if final.isupper() else alt.lower()
+        if alt != final and alt not in [a for a, _ in alts]:
+            alts.append((alt, round(float(p[idx]), 3)))
+        if len(alts) == 3:
+            break
+    return round(conf, 3), alts
+
+
+def recognize(gray, model=None):
+    """Recognise a grayscale page. Returns a dict with the text and, for every line, word and
+    character, its box in image pixels, the model's confidence and its next-best readings.
+    `model` is "new" or "original" (default: model_name())."""
+    if model is not None and model not in available_models():
+        raise ValueError(f"unknown model {model!r}")
+    token = _ACTIVE_MODEL.set(model)
+    try:
+        return _recognize(gray)
+    finally:
+        _ACTIVE_MODEL.reset(token)
+
+
+def _recognize(gray):
+    result = {"text": "", "lines": [], "width": int(gray.shape[1]), "height": int(gray.shape[0]),
+              "model": model_name()}
     mask = binarise(gray)
     lines, labels, med_h = segment(mask)
     chars = [b for line in lines for b in line if b.kind == 'char']
     if not chars:
-        return ""
+        return result
     logp = dict(zip(map(id, chars), classify(mask, labels, chars)))
     split_touching(mask, labels, lines, logp, med_h)
     for line in lines:
@@ -568,10 +614,11 @@ def image_method(path):
     out_lines = []
     sentence_start = True
     for words in page:
-        texts = []
+        texts, line_out = [], []
         for word in words:
             cs = [b for b in word if b.kind == 'char']
-            letters = fix_bars(decode_word(np.array([logp[id(b)] for b in cs]), prior)[0], cs) if cs else []
+            decoded = decode_word(np.array([logp[id(b)] for b in cs]), prior)[0] if cs else []
+            letters = fix_bars(decoded, cs)
             text, k = '', 0
             for b in word:
                 if b.kind == 'char':
@@ -583,10 +630,40 @@ def image_method(path):
                     text += '-'
             core = text.rstrip('.')
             body = format_word(list(core), sentence_start) if core else ''
-            texts.append(body + text[len(core):])
+            final = body + text[len(core):]
             if core:
                 sentence_start = False
             if text.endswith('.'):
                 sentence_start = True
-        out_lines.append(' '.join(t for t in texts if t))
-    return '\n'.join(out_lines)
+            if not final:
+                continue
+            texts.append(final)
+            word_out, k = [], 0
+            for ch, b in zip(final, word):
+                entry = {"ch": ch, "box": [int(b.x0), int(b.y0), int(b.x1), int(b.y1)]}
+                if b.kind == 'char':
+                    entry["conf"], entry["alts"] = _char_info(ch, logp[id(b)], letters[k] != decoded[k])
+                    k += 1
+                else:
+                    entry["conf"], entry["alts"] = 1.0, []
+                word_out.append(entry)
+            line_out.append({"chars": word_out})
+        out_lines.append(' '.join(texts))
+        result["lines"].append({"words": line_out})
+    result["text"] = '\n'.join(out_lines)
+    return result
+
+
+def read_image(data):
+    """Decode image bytes (JPEG, PNG, ...) to grayscale, or raise ValueError."""
+    gray = cv.imdecode(np.frombuffer(data, np.uint8), cv.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise ValueError("not an image OpenCV can read")
+    return gray
+
+
+def image_method(path):
+    gray = cv.imread(path, cv.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise ValueError(f"Could not read image: {path}")
+    return recognize(gray)["text"]
