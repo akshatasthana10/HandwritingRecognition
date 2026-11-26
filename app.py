@@ -8,7 +8,8 @@ Pipeline
    merge broken pieces of one character; detect full stops and hyphens.
 3. Normalise each character the way EMNIST images were made: keep the aspect ratio,
    fill the 28x28 frame, normalise stroke thickness, anti-alias and blur.
-4. Classify with the CNN, averaging predictions over a few thickness/scale variants.
+4. Classify with the CNN (the original one, or the deeper one from train.py), averaging
+   predictions over a few thickness/scale variants. Rendering settings are per model (PREP).
 5. Decode with context: each word is read as letters or digits as a whole, unless a
    switch is strongly supported, so "a1ong" becomes "along" and "l0" becomes "10".
 """
@@ -20,7 +21,9 @@ import numpy as np
 from keras.layers import Conv2D, Dense, Dropout, Flatten, Input, MaxPooling2D
 from keras.models import Sequential
 
-WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AZaz09weights")
+HERE = os.path.dirname(os.path.abspath(__file__))
+WEIGHTS_PATH = os.path.join(HERE, "AZaz09weights")                 # original CNN (2020)
+NEW_MODEL_PATH = os.path.join(HERE, "models", "emnist_cnn.keras")   # deeper CNN from train.py
 
 OUTPUT_LABELS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
                  'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'd', 'e',
@@ -32,8 +35,15 @@ LOWER_ONLY = {'a', 'b', 'd', 'e', 'f', 'g', 'h', 'n', 'q', 'r', 't'}
 UPPER_HAS_LOWER = set('ABDEFGHNQRT')
 
 # Tunables (character sizes are relative to the median character height of the page).
-FILL = 22             # size of the character's longest side inside the 28x28 frame
-TARGET_STROKE = 3.5   # stroke width, in 28x28 pixels, that EMNIST characters have
+# How characters are rendered for each model (tuned with evaluate.py):
+#   fill   - size of the character's longest side inside the 28x28 frame
+#   stroke - stroke width in 28x28 pixels to normalise to, or None to keep the natural width
+#   blur   - Gaussian blur sigma after resizing (0 = none)
+#   tta    - average predictions over a few size/thickness variants
+PREP = {
+    "original": dict(fill=22, stroke=3.5, blur=0.8, tta=True),
+    "new": dict(fill=20, stroke=None, blur=0, tta=False),
+}
 SPACE_GAP = 0.35      # smallest gap (x median height) that may count as a word break
 SWITCH_PENALTY = 4.0  # log-prob cost of switching between letters and digits inside a word
 
@@ -70,15 +80,28 @@ def _load_legacy_weights(model, path):
             layer.set_weights(ws)
 
 
-_MODEL = None
+_MODELS = {}
 
 
-def get_model():
-    global _MODEL
-    if _MODEL is None:
-        _MODEL = _larger_model()
-        _load_legacy_weights(_MODEL, WEIGHTS_PATH)
-    return _MODEL
+def model_name():
+    """Which classifier to use: HWR_MODEL=original|new, default "new" when it has been trained."""
+    name = os.environ.get("HWR_MODEL", "").lower()
+    if name in ("original", "new"):
+        return name
+    return "new" if os.path.exists(NEW_MODEL_PATH) else "original"
+
+
+def get_model(name=None):
+    name = name or model_name()
+    if name not in _MODELS:
+        if name == "new":
+            import keras
+            _MODELS[name] = keras.models.load_model(NEW_MODEL_PATH)
+        else:
+            model = _larger_model()
+            _load_legacy_weights(model, WEIGHTS_PATH)
+            _MODELS[name] = model
+    return _MODELS[name]
 
 
 # ----------------------------------------------------------------------------- 1. binarise
@@ -262,16 +285,18 @@ def _stroke_width(mask):
     return 4.0 * float(vals.mean()) if vals.size else 1.0
 
 
-def to_emnist(mask, labels, box, fill=FILL, stroke=TARGET_STROKE):
-    """Crop one character and render it as a 28x28 float image in the EMNIST style."""
+def to_emnist(mask, labels, box, fill=22, stroke=3.5, blur=0.8):
+    """Crop one character and render it as a 28x28 float image (aspect ratio kept)."""
     pad = 4
     y0, y1, x0, x1 = box.y0, box.y1, box.x0, box.x1
     crop = np.isin(labels[y0:y1, x0:x1], box.labels) & (mask[y0:y1, x0:x1] > 0)
     crop = np.pad(crop.astype(np.uint8) * 255, pad)
     scale = fill / max(box.w, box.h)
-    sw = _stroke_width(crop)
-    delta = int(round((stroke / scale - sw) / 2))           # full-res pixels to add per side
-    delta = max(-int(sw / 3), min(delta, int(4 / scale) + 1))
+    delta = 0
+    if stroke is not None:
+        sw = _stroke_width(crop)
+        delta = int(round((stroke / scale - sw) / 2))       # full-res pixels to add per side
+        delta = max(-int(sw / 3), min(delta, int(4 / scale) + 1))
     if delta > 0:
         crop = np.pad(crop, delta)
         crop = cv.dilate(crop, cv.getStructuringElement(cv.MORPH_ELLIPSE, (2 * delta + 1, 2 * delta + 1)))
@@ -289,7 +314,8 @@ def to_emnist(mask, labels, box, fill=FILL, stroke=TARGET_STROKE):
     out = np.zeros((28, 28), np.float32)
     o = (28 - fill) // 2
     out[o:o + fill, o:o + fill] = small
-    out = cv.GaussianBlur(out, (3, 3), 0.8)
+    if blur:
+        out = cv.GaussianBlur(out, (3, 3), blur)
     return out / max(out.max(), 1e-6)
 
 
@@ -297,12 +323,18 @@ def to_emnist(mask, labels, box, fill=FILL, stroke=TARGET_STROKE):
 
 def classify(mask, labels, boxes):
     """Return an (n, 47) array of class log-probabilities, averaged over a few renderings."""
-    variants = [(FILL, TARGET_STROKE), (FILL + 2, TARGET_STROKE), (FILL, TARGET_STROKE * 1.3),
-                (FILL - 2, TARGET_STROKE * 0.8)]
+    p = PREP[model_name()]
+    fill, stroke = p["fill"], p["stroke"]
+    variants = [(fill, stroke)]
+    if p["tta"]:
+        if stroke is None:
+            variants += [(fill + 2, None), (fill - 2, None)]
+        else:
+            variants += [(fill + 2, stroke), (fill, stroke * 1.3), (fill - 2, stroke * 0.8)]
     batch = []
     for b in boxes:
-        for fill, stroke in variants:
-            batch.append(to_emnist(mask, labels, b, fill, stroke).T)   # EMNIST images are transposed
+        for f, s in variants:
+            batch.append(to_emnist(mask, labels, b, f, s, p["blur"]).T)   # EMNIST images are transposed
     probs = get_model().predict(np.asarray(batch)[..., None], verbose=0)
     probs = probs.reshape(len(boxes), len(variants), 47).mean(axis=1)
     return np.log(probs + 1e-9)

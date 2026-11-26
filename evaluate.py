@@ -4,7 +4,7 @@ Character accuracy = 1 - (edit distance / reference length), compared case-insen
 (the model's 47 EMNIST classes merge upper/lower case for many letters) with all
 whitespace collapsed to single spaces. Character accuracy ignoring spaces is also reported.
 
-Usage: .venv/bin/python evaluate.py [-v]
+Usage: .venv/bin/python evaluate.py [-v] [--model original|new]
 """
 import contextlib
 import io
@@ -13,7 +13,10 @@ import os
 import re
 import sys
 
-from app import image_method
+if "--model" in sys.argv:
+    os.environ["HWR_MODEL"] = sys.argv[sys.argv.index("--model") + 1]
+
+from app import image_method, model_name
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -37,6 +40,7 @@ def main():
     verbose = "-v" in sys.argv
     truth = json.load(open(os.path.join(HERE, "dataset", "ground_truth.json")))
     tot = {"err": 0, "len": 0, "err_ns": 0, "len_ns": 0}
+    print(f"model: {model_name()}")
     print(f"{'image':<18}{'char acc':>10}{'no-space':>10}")
     for name, ref in truth.items():
         with contextlib.redirect_stdout(io.StringIO()):
