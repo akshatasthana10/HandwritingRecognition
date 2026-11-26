@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Handwriting to text</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="bar">
+    <h1 class="wordmark">Handwriting to text</h1>
+    <div class="model" id="model-picker" hidden>
+      <span class="model-label" id="model-label">Model</span>
+      <div class="segmented" role="radiogroup" aria-labelledby="model-label">
+        <button type="button" role="radio" data-model="new">New</button>
+        <button type="button" role="radio" data-model="original">Original</button>
+      </div>
+    </div>
+    <div class="progress" id="progress" hidden><span></span></div>
+  </header>
+
+  <main class="workspace" id="workspace" data-state="empty">
+    <!-- left: the page photo -->
+    <section class="page-pane" aria-label="Handwritten page">
+      <div class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" hidden>
+        <div class="drop-target" id="drop-target">
+          <svg class="drop-icon" viewBox="0 0 48 48" aria-hidden="true">
+            <path d="M12 6h17l9 9v27H12z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            <path d="M29 6v9h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+            <path d="M17 24c2-3 4 3 6 0s4-3 5 0 3 2 4 0M17 31c2-2 3 2 5 0s4-2 6 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <h2>Drop a photo of a handwritten page</h2>
+          <p>or <button type="button" class="link" id="choose">choose a file</button>, or paste an image with <kbd>⌘V</kbd></p>
+        </div>
+        <div class="samples" id="samples" hidden>
+          <h3>Or try one of the sample pages</h3>
+          <ul id="sample-list"></ul>
+        </div>
+      </div>
+
+      <div class="viewer" id="viewer" hidden>
+        <div class="viewer-tools">
+          <label class="toggle"><input type="checkbox" id="show-boxes"> Show every letter box</label>
+          <button type="button" class="quiet" id="new-page">Use another page</button>
+        </div>
+        <figure class="photo" id="photo">
+          <img id="photo-img" alt="The handwritten page being read">
+          <svg id="overlay" class="overlay" preserveAspectRatio="none" aria-hidden="true"></svg>
+          <div class="scan" aria-hidden="true"></div>
+        </figure>
+      </div>
+    </section>
+
+    <!-- right: the typed text -->
+    <section class="text-pane" aria-label="Typed text">
+      <div class="summary" id="summary">
+        <p id="summary-text">The typed text will appear here. Letters worth checking are underlined in red.</p>
+        <button type="button" class="quiet" id="next-unsure" hidden>Check next letter</button>
+      </div>
+
+      <div class="sheet" id="sheet" tabindex="-1"></div>
+      <textarea class="sheet plain" id="plain" spellcheck="false" hidden aria-label="Typed text, editable"></textarea>
+
+      <div class="error" id="error" role="alert" hidden>
+        <p id="error-text"></p>
+        <button type="button" class="quiet" id="error-retry">Choose another image</button>
+      </div>
+
+      <div class="actions" id="actions" hidden>
+        <button type="button" class="primary" id="copy">Copy text</button>
+        <button type="button" id="download">Download .txt</button>
+        <button type="button" class="quiet" id="edit-plain">Edit as plain text</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="popover" id="popover" role="dialog" aria-modal="false" aria-labelledby="pop-title" hidden>
+    <p class="pop-title" id="pop-title">Read as <span class="pop-char" id="pop-char"></span></p>
+    <p class="pop-conf" id="pop-conf"></p>
+    <div class="pop-alts" id="pop-alts"></div>
+    <label class="pop-type">Or type the right letter <input id="pop-input" maxlength="1" autocomplete="off"></label>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

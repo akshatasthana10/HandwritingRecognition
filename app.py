@@ -10,9 +10,14 @@ Pipeline
    fill the 28x28 frame, normalise stroke thickness, anti-alias and blur.
 4. Classify with the CNN (the original one, or the deeper one from train.py), averaging
    predictions over a few thickness/scale variants. Rendering settings are per model (PREP).
+   Wide characters the model is unsure about (touching letters such as "th") are cut at
+   their thinnest column when the model is confident about both halves.
 5. Decode with context: each word is read as letters or digits as a whole, unless a
-   switch is strongly supported, so "a1ong" becomes "along" and "l0" becomes "10".
+   switch is strongly supported, so "a1ong" becomes "along" and "l0" becomes "10". Plain
+   vertical bars, which the model cannot tell apart, become i / I / l from the dot, the
+   word's case and the local x-height.
 """
+import contextvars
 import os
 
 import cv2 as cv
@@ -83,9 +88,17 @@ def _load_legacy_weights(model, path):
 _MODELS = {}
 
 
+_ACTIVE_MODEL = contextvars.ContextVar("active_model", default=None)
+
+
+def available_models():
+    return ["new", "original"] if os.path.exists(NEW_MODEL_PATH) else ["original"]
+
+
 def model_name():
-    """Which classifier to use: HWR_MODEL=original|new, default "new" when it has been trained."""
-    name = os.environ.get("HWR_MODEL", "").lower()
+    """Which classifier to use: the one recognize() was asked for, else HWR_MODEL=original|new,
+    else "new" when it has been trained."""
+    name = _ACTIVE_MODEL.get() or os.environ.get("HWR_MODEL", "").lower()
     if name in ("original", "new"):
         return name
     return "new" if os.path.exists(NEW_MODEL_PATH) else "original"
@@ -106,11 +119,25 @@ def get_model(name=None):
 
 # ----------------------------------------------------------------------------- 1. binarise
 
+def estimate_background(gray, factor=4):
+    """Paper brightness everywhere, with the ink removed (morphological closing with a disc larger
+    than any stroke). The background varies slowly, so it is computed on a copy shrunk by
+    `factor` (taking the brightest pixel of each block, so thin ink does not darken it) and
+    scaled back up: the same result at a fraction of the cost of closing the full image."""
+    h, w = gray.shape
+    hs, ws = h // factor, w // factor
+    if hs < 32 or ws < 32:
+        factor, hs, ws = 1, h, w
+    small = gray[:hs * factor, :ws * factor].reshape(hs, factor, ws, factor).max(axis=(1, 3))
+    k = max(31, (min(gray.shape) // 20) | 1) // factor | 1
+    small = cv.morphologyEx(small, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, (k, k)))
+    return cv.resize(small, (w, h), interpolation=cv.INTER_LINEAR)
+
+
 def binarise(gray):
     """Return a uint8 mask (255 = ink) robust to shadows, uneven lighting and show-through."""
     gray = cv.medianBlur(gray, 3)
-    k = max(31, (min(gray.shape) // 20) | 1)
-    background = cv.morphologyEx(gray, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, (k, k)))
+    background = estimate_background(gray)
     norm = cv.divide(gray, background, scale=255)          # paper ~255, ink darker
     ink = cv.GaussianBlur(255 - norm, (3, 3), 0)
     _, mask = cv.threshold(ink, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU)
@@ -128,6 +155,7 @@ class Box:
         self.labels = list(labels)
         self.kind = 'char'  # or 'dot', 'dash'
         self.has_dot = False
+        self.band = None    # (top, bottom) of the local x-height band, set for bar-shaped boxes
 
     @property
     def w(self):
@@ -342,6 +370,69 @@ def classify(mask, labels, boxes):
 
 # ----------------------------------------------------------------------------- 5. decode
 
+SPLIT_MAX_CONF = 0.65   # only try to split characters the model is unsure about
+SPLIT_MIN_CONF = 0.85   # ...and accept a cut only if both halves are recognised at least this well
+
+
+def _sub_box(mask, labels, box, x0, x1):
+    """The part of `box` between columns x0..x1, with its vertical extent tightened to the ink."""
+    region = np.isin(labels[box.y0:box.y1, x0:x1], box.labels) & (mask[box.y0:box.y1, x0:x1] > 0)
+    rows = np.nonzero(region.any(axis=1))[0]
+    if len(rows) == 0:
+        return None
+    sub = Box(x0, box.y0 + rows[0], x1, box.y0 + rows[-1] + 1, box.labels)
+    return sub
+
+
+def split_touching(mask, labels, lines, logp, med_h):
+    """Touching letters ("to", "th") form one connected shape that the model cannot read. For a
+    wide character the model is unsure about, try cutting it at the thinnest columns and keep
+    the cut when the model is confident about both halves. Modifies lines and logp in place."""
+    candidates = []                      # (line, box, [(left, right), ...])
+    for line in lines:
+        for b in line:
+            if b.kind != 'char' or b.w < b.h * 1.05 or b.w < med_h * 0.8:
+                continue
+            if np.exp(logp[id(b)].max()) > SPLIT_MAX_CONF:
+                continue
+            region = np.isin(labels[b.y0:b.y1, b.x0:b.x1], b.labels) & (mask[b.y0:b.y1, b.x0:b.x1] > 0)
+            ink = region.sum(axis=0).astype(float)
+            lo, hi = int(b.w * 0.25), int(b.w * 0.75)
+            if hi <= lo:
+                continue
+            cuts = []
+            for x in np.argsort(ink[lo:hi]) + lo:            # thinnest columns first
+                if all(abs(x - c) > b.w * 0.1 for c in cuts):
+                    cuts.append(int(x))
+                if len(cuts) == 3:
+                    break
+            pairs = []
+            for c in cuts:
+                left = _sub_box(mask, labels, b, b.x0, b.x0 + c)
+                right = _sub_box(mask, labels, b, b.x0 + c, b.x1)
+                if left is not None and right is not None and min(left.w, right.w) > med_h * 0.2:
+                    pairs.append((left, right))
+            if pairs:
+                candidates.append((line, b, pairs))
+    if not candidates:
+        return
+    pieces = [p for _, _, pairs in candidates for pair in pairs for p in pair]
+    piece_logp = classify(mask, labels, pieces)
+    k = 0
+    for line, b, pairs in candidates:
+        best, best_score = None, np.exp(logp[id(b)].max())
+        for left, right in pairs:
+            conf = np.exp(min(piece_logp[k].max(), piece_logp[k + 1].max()))
+            if conf > SPLIT_MIN_CONF and conf > best_score:
+                best, best_score = (left, right, piece_logp[k], piece_logp[k + 1]), conf
+            k += 2
+        if best is not None:
+            left, right, lp_l, lp_r = best
+            i = line.index(b)
+            line[i:i + 1] = [left, right]
+            logp[id(left)], logp[id(right)] = lp_l, lp_r
+
+
 def decode_word(logp, prior=(0.0, 0.0)):
     """Choose letters or digits for each character with a penalty for switching mid-word.
 
@@ -369,27 +460,57 @@ def decode_word(logp, prior=(0.0, 0.0)):
     return out[::-1], states[::-1]
 
 
+def _is_bar(box):
+    return box.w <= box.h * 0.45
+
+
+def word_is_upper(labels):
+    """True when most letters whose case the model can tell apart are capitals."""
+    distinct = [c for c in labels if c in LOWER_ONLY or c in UPPER_HAS_LOWER]
+    return bool(distinct) and sum(c.isupper() for c in distinct) > len(distinct) / 2
+
+
 def fix_bars(labels, boxes):
-    """A plain vertical bar is ambiguous to the model (i / l / I / 1). Use what segmentation saw:
-    a bar with a dot is "i"; a dotless bar clearly taller than the word's other letters is "l"."""
-    others = sorted(b.h for b in boxes if b.w > b.h * 0.45)
-    typical = others[len(others) // 2] if others else None
+    """A plain vertical bar is ambiguous to the model: its "I" class means a seriffed capital I or
+    a dotted i, so a bare bar comes out as "1" or "l". Decide from what segmentation saw:
+    - a bar with a dot attached is "i";
+    - in a word written in capitals it is "I";
+    - otherwise compare with the line's x-height band around it: rising clearly above it is
+      "l", staying within it is an "i" whose dot was not found.
+    """
+    upper = word_is_upper([lab for lab, b in zip(labels, boxes) if not _is_bar(b)])
     out = list(labels)
     for k, (lab, b) in enumerate(zip(labels, boxes)):
-        if lab not in ('I', 'L') or b.w > b.h * 0.45:
+        if lab not in ('I', 'L') or not _is_bar(b):
             continue
         if b.has_dot:
             out[k] = 'i'
-        elif typical is not None and b.h > typical * 1.25:
-            out[k] = 'l'
+        elif upper:
+            out[k] = 'I'
+        elif b.band is not None:
+            top, bottom = b.band
+            out[k] = 'l' if b.y0 < top - 0.2 * (bottom - top) else 'i'
     return out
+
+
+def set_bands(line):
+    """For each bar in the line, estimate the x-height band from its nearest other characters:
+    the median top and bottom of the shorter half of them (letters like a, e, n, o)."""
+    others = [c for c in line if c.kind == 'char' and not _is_bar(c)]
+    if len(others) < 3:
+        return
+    for b in line:
+        if b.kind == 'char' and _is_bar(b):
+            near = sorted(others, key=lambda c: abs(c.cx - b.cx))[:8]
+            h = np.median([c.h for c in near])
+            short = [c for c in near if c.h <= h]           # drop ascenders/descenders
+            b.band = (float(np.median([c.y0 for c in short])), float(np.median([c.y1 for c in short])))
 
 
 def format_word(chars, capitalise):
     word = ''.join(chars)
     letters = [c for c in chars if c.isalpha()]
-    distinct = [c for c in letters if c in LOWER_ONLY or c in UPPER_HAS_LOWER]
-    if len(letters) > 1 and distinct and sum(c.isupper() for c in distinct) > len(distinct) / 2:
+    if len(letters) > 1 and word_is_upper(letters):
         return word.upper()
     word = word.lower()
     if capitalise and chars and chars[0].isupper():
@@ -415,16 +536,56 @@ def word_gap_threshold(lines, med_h):
     return (best_t if best_t is not None else SPACE_GAP * 1.5) * med_h
 
 
-def image_method(path):
-    gray = cv.imread(path, cv.IMREAD_GRAYSCALE)
-    if gray is None:
-        raise ValueError(f"Could not read image: {path}")
+BAR_CLASSES = [OUTPUT_LABELS.index('I'), OUTPUT_LABELS.index('L'), OUTPUT_LABELS.index('1')]
+
+
+def _char_info(final, logp_row, by_geometry):
+    """Confidence and the model's next-best readings for one recognised character."""
+    p = np.exp(logp_row)
+    if by_geometry:                       # an i / l / I decided from the page, not the model
+        conf = float(p[BAR_CLASSES].sum())
+    else:
+        # context already chose letters or digits for this word, so judge the reading against
+        # its own group ("o" and "0" are the same shape; that is not uncertainty about the letter)
+        key = final if final in OUTPUT_LABELS else final.upper()
+        group = DIGITS if final.isdigit() else LETTERS
+        conf = float(p[OUTPUT_LABELS.index(key)] / max(p[group].sum(), 1e-9)) if key in OUTPUT_LABELS else float(p.max())
+    alts = []
+    for idx in np.argsort(-p):
+        alt = OUTPUT_LABELS[idx]
+        alt = alt.upper() if final.isupper() else alt.lower()
+        if alt != final and alt not in [a for a, _ in alts]:
+            alts.append((alt, round(float(p[idx]), 3)))
+        if len(alts) == 3:
+            break
+    return round(conf, 3), alts
+
+
+def recognize(gray, model=None):
+    """Recognise a grayscale page. Returns a dict with the text and, for every line, word and
+    character, its box in image pixels, the model's confidence and its next-best readings.
+    `model` is "new" or "original" (default: model_name())."""
+    if model is not None and model not in available_models():
+        raise ValueError(f"unknown model {model!r}")
+    token = _ACTIVE_MODEL.set(model)
+    try:
+        return _recognize(gray)
+    finally:
+        _ACTIVE_MODEL.reset(token)
+
+
+def _recognize(gray):
+    result = {"text": "", "lines": [], "width": int(gray.shape[1]), "height": int(gray.shape[0]),
+              "model": model_name()}
     mask = binarise(gray)
     lines, labels, med_h = segment(mask)
     chars = [b for line in lines for b in line if b.kind == 'char']
     if not chars:
-        return ""
+        return result
     logp = dict(zip(map(id, chars), classify(mask, labels, chars)))
+    split_touching(mask, labels, lines, logp, med_h)
+    for line in lines:
+        set_bands(line)
 
     gap_threshold = word_gap_threshold(lines, med_h)
     # split every line into words at large gaps
@@ -453,10 +614,11 @@ def image_method(path):
     out_lines = []
     sentence_start = True
     for words in page:
-        texts = []
+        texts, line_out = [], []
         for word in words:
             cs = [b for b in word if b.kind == 'char']
-            letters = fix_bars(decode_word(np.array([logp[id(b)] for b in cs]), prior)[0], cs) if cs else []
+            decoded = decode_word(np.array([logp[id(b)] for b in cs]), prior)[0] if cs else []
+            letters = fix_bars(decoded, cs)
             text, k = '', 0
             for b in word:
                 if b.kind == 'char':
@@ -468,10 +630,40 @@ def image_method(path):
                     text += '-'
             core = text.rstrip('.')
             body = format_word(list(core), sentence_start) if core else ''
-            texts.append(body + text[len(core):])
+            final = body + text[len(core):]
             if core:
                 sentence_start = False
             if text.endswith('.'):
                 sentence_start = True
-        out_lines.append(' '.join(t for t in texts if t))
-    return '\n'.join(out_lines)
+            if not final:
+                continue
+            texts.append(final)
+            word_out, k = [], 0
+            for ch, b in zip(final, word):
+                entry = {"ch": ch, "box": [int(b.x0), int(b.y0), int(b.x1), int(b.y1)]}
+                if b.kind == 'char':
+                    entry["conf"], entry["alts"] = _char_info(ch, logp[id(b)], letters[k] != decoded[k])
+                    k += 1
+                else:
+                    entry["conf"], entry["alts"] = 1.0, []
+                word_out.append(entry)
+            line_out.append({"chars": word_out})
+        out_lines.append(' '.join(texts))
+        result["lines"].append({"words": line_out})
+    result["text"] = '\n'.join(out_lines)
+    return result
+
+
+def read_image(data):
+    """Decode image bytes (JPEG, PNG, ...) to grayscale, or raise ValueError."""
+    gray = cv.imdecode(np.frombuffer(data, np.uint8), cv.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise ValueError("not an image OpenCV can read")
+    return gray
+
+
+def image_method(path):
+    gray = cv.imread(path, cv.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise ValueError(f"Could not read image: {path}")
+    return recognize(gray)["text"]

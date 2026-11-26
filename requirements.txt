@@ -1,5 +1,7 @@
 tensorflow
 opencv-python-headless
-kivy
 numpy
 h5py
+fastapi
+uvicorn[standard]
+python-multipart
