@@ -2,12 +2,29 @@ import copy
 import math
 import cv2 as cv
 import numpy as np
-from keras.layers import Dense
-from keras.layers import Dropout
-from keras.layers import Flatten
-from keras.layers.convolutional import Conv2D
-from keras.layers.convolutional import MaxPooling2D
+import os
+from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D, Input
 from keras.models import Sequential
+import h5py
+
+WEIGHTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AZaz09weights")
+
+
+def _load_legacy_weights(model, path):
+	"""Load weights saved by old Keras (HDF5, by layer name) into the model's layers in order."""
+	with h5py.File(path, "r") as f:
+		g = f["model_weights"] if "model_weights" in f else f
+		names = [n.decode() if isinstance(n, bytes) else n for n in g.attrs["layer_names"]]
+		weighted = [l for l in model.layers if l.weights]
+		saved = []
+		for n in names:
+			lg = g[n]
+			wn = [w.decode() if isinstance(w, bytes) else w for w in lg.attrs["weight_names"]]
+			if wn:
+				saved.append([lg[w][()] for w in wn])
+		assert len(saved) == len(weighted), (len(saved), len(weighted))
+		for layer, ws in zip(weighted, saved):
+			layer.set_weights(ws)
 
 
 def image_method(h):
@@ -189,7 +206,8 @@ def image_method(h):
 	num_classes = 47
 	def larger_model():
 		model = Sequential()
-		model.add(Conv2D(30, (5, 5), input_shape=(28, 28, 1), activation='relu'))
+		model.add(Input(shape=(28, 28, 1)))
+		model.add(Conv2D(30, (5, 5), activation='relu'))
 		model.add(MaxPooling2D(pool_size=(2, 2)))
 		model.add(Conv2D(15, (3, 3), activation='relu'))
 		model.add(MaxPooling2D(pool_size=(2, 2)))
@@ -204,7 +222,7 @@ def image_method(h):
 		return model
 	# build the model
 	model = larger_model()
-	model.load_weights(r".\AZaz09weights")
+	_load_legacy_weights(model, WEIGHTS_PATH)
 	output_labels = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
 	'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'd', 'e',
 	'f', 'g', 'h', 'n', 'q', 'r', 't']
@@ -219,7 +237,7 @@ def image_method(h):
 		dst = cv.warpAffine(image, M, (cols, rows))  # rotating the character images
 		flippedImageList.append(cv.flip(dst, 1))  # flipping the character images
 	flippedImageArray = np.asarray(flippedImageList)
-	predictedClasses = model.predict_classes(flippedImageArray.reshape(imageArray.shape[0], 28, 28, 1))  #prdeiction
+	predictedClasses = np.argmax(model.predict(flippedImageArray.reshape(imageArray.shape[0], 28, 28, 1), verbose=0), axis=1)  #prdeiction
 
 	for i in range(0, predictedClasses.shape[0]):
 		if predictedClasses[i] == 0:
